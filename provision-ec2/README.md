@@ -51,8 +51,7 @@ Including an example of how to use your role (for instance, with variables passe
    gather_facts: false
    user: root
    pre_tasks:
-     - include_vars: ../ec2_vars/{{ cli_environmentid }}/vpc-components.json
-     - include_vars: ../ec2_vars/{{ cli_environmentid }}/{{ type }}_eu1a.yml
+          - include_vars: ../ec2_vars/{{ cli_environmentid }}/{{ type }}_eu1a.yml
    roles:
      - { role: provision-ec2, ec2_user_data: "", win_initial_password: "", OS_LINUX: LINUX, OS_WINDOWS: WINDOWS, ec2_instance_os: "{{ OS_LINUX }}", iam_name: "{{ec2_tag_Application}}-{{ec2_tag_EnvironmentGroup}}-{{ec2_tag_Role}}" }
 
