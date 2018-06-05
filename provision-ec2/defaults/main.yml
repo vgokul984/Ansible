@@ -1,0 +1,6 @@
+---
+# defaults file for roles/provision-ec2
+OS_WINDOWS: WINDOWS
+OS_LINUX: LINUX
+ec2_instance_os: "{{ OS_LINUX }}"
+ec2_user_data: ""

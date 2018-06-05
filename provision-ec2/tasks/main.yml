@@ -1,0 +1,280 @@
+---
+# tasks file for roles/provision-ec2
+
+- fail:
+    msg: "No Region is specified"
+  when: REGION is not defined or REGION == ''
+
+- name: Provision ec2 | Set regex pattern for Hostname matching
+  set_fact: pattern="^D[1-3]\D+[0-9][0-9]\D+W$"
+
+- name: set instance os type
+  set_fact: ec2_instance_os="{{ OS_WINDOWS }}"
+  when: ec2_tag_Name | match(pattern)
+
+
+- name: set user data based instance os
+  set_fact:
+    ec2_user_data: "{{ lookup('template', 'userdata_win.j2.txt') |  default('') }}"
+  when: (ec2_instance_os is defined) and (ec2_instance_os == OS_WINDOWS)
+
+- debug: var=ec2_user_data
+# Set facts
+
+- fail:
+    msg: "No VPC Name found or SG Name found in ec2_vars!"
+  when: ec2_vpc_name is not defined or ec2_security_group_name is not defined
+
+- fail:
+    msg: "No Account ID  found or AMI Name found in ec2_vars!"
+  when: ec2_ami_name is not defined or ec2_account_id is not defined
+
+- name: Gather VPC-ID facts
+  ec2_vpc_net_facts:
+    region: "{{ REGION }}"
+    filters:
+      "tag:Name": "{{ec2_vpc_name}}"
+  register: ec2_vpcid
+  check_mode: no
+
+- name: Gather SecurityGroup-ID
+  ec2_group_facts:
+    region: "{{ REGION }}"
+    filters:
+      "tag:Name": "{{ec2_security_group_name}}"
+      vpc-id: "{{ ec2_vpcid.vpcs.0.id }}"
+  register: ec2_sgid
+
+- name: gather subnet id
+  ec2_vpc_subnet_facts:
+    region: "{{ REGION }}"
+    filters:
+      vpc-id: "{{ ec2_vpcid.vpcs.0.id }}"
+      "tag:Name": "{{ ec2_subnet_name }}"
+  register: ec2_subnet
+
+- name: find latest of the ami
+  ec2_ami_find:
+    name: "{{ec2_ami_name}}*"
+    owner: "{{ec2_account_id}}"
+    region: "{{REGION}}"
+    sort: creationDate
+    sort_order: descending
+    sort_end: 1
+  register: ami_find
+  
+- name: Get EC2 facts for the instance
+  ec2_instance_facts:
+    region: "{{ REGION }}"
+    filters:
+      "tag:Name": "{{ec2_tag_Name}}{{item}}"
+  with_sequence: start="{{ startindex }}" end={{startindex + no_of_instances - 1 }} format=%02d stride=1
+  register: instance_info_all
+
+#- name: register instance ID
+#  set_fact:
+#    id: "{{item.instance_id}}"
+#  register: instance_id
+#  when: not(item.state.name == "stopped" or "running")
+#  with_items: "{{ instance_info.results[0].instances }}"
+ 
+- name: change tags of terminated  resource
+  ec2_tag:
+    region: '{{ REGION }}'
+    resource: '{{ item.1.instance_id}}'
+    state: present
+    tags:
+      Name: "{{item.1.tags.Name}}-Terminated"
+  when: item.1.state.name == "terminated" 
+  with_subelements:
+    -  "{{instance_info_all.results | default([]) }}"
+    -  instances
+ 
+
+- name: Get EC2 facts for the instance
+  ec2_instance_facts:
+    region: "{{ REGION }}"
+    filters:
+      "tag:Name": "{{ec2_tag_Name}}{{item}}"
+  with_sequence: start="{{ startindex }}" end={{startindex + no_of_instances - 1 }} format=%02d stride=1
+  register: instance_info
+
+- name: get defined instance type
+  set_fact:
+    instance_size: "{{ec2_instance_type}}"
+
+- name: get assigned instance type
+  set_fact:
+    as_instance_size: "{{item.1.instance_type}}"
+  with_subelements:
+       - "{{ instance_info.results | default([])}}"
+       - instances
+
+- block:
+  - name: Stop the sandbox instances
+    ec2:
+      instance_ids: '{{ item.1.instance_id}}'
+      region: '{{ REGION }}'
+      state: stopped
+      wait: True
+    when: not (item.1.instance_type == "{{instance_size}}")
+    with_subelements:
+       - "{{ instance_info.results }}"
+       - instances 
+    register: instance_stop
+
+  - name: change instance type
+    shell: aws ec2 modify-instance-attribute --instance-id {{item.1.id}} --instance-type {{ec2_instance_type}} --region {{REGION}}
+    when: item.1.state == "stopped"
+    with_subelements:
+       - "{{ instance_stop.results | default([])}}"
+       - instances
+  when: not(as_instance_size == instance_size)
+
+
+- name: Start stopped ec2 instances
+  local_action:
+    module: ec2
+    region: "{{ REGION }}"
+    image: "{{ ami_find.results[0].ami_id  }}"
+    instance_type: "{{ ec2_instance_type }}"
+    instance_ids: "{{ item.1.instance_id }}"
+    state: running
+    wait: true
+#  when: item.1.state.name == "stopped" 
+  with_subelements: 
+     - "{{ instance_info.results | default([])}}"
+     - instances
+
+- name: Provision EC2 Box
+  local_action:
+    module: ec2
+    key_name: "{{ ec2_keypair }}"
+    group_id: "{{ec2_sgid.security_groups |map(attribute='group_id')|list}}"
+    instance_type: "{{ ec2_instance_type }}"
+    image: "{{ ami_find.results[0].ami_id  }}"
+    vpc_subnet_id: "{{ ec2_subnet.subnets[0].id }}"
+    region: "{{ REGION }}"
+    assign_public_ip: no
+    instance_profile_name: "{{ iam_name }}"
+    instance_tags: '{"Name":"{{ec2_tag_Name}}{{item}}","Project":"{{ec2_tag_Project}}","Application":"{{ec2_tag_Application}}","EnvironmentGroup":"{{ec2_tag_EnvironmentGroup}}","EnvironmentID":"{{ec2_tag_EnvironmentID}}","EnvironmentUse":"{{ec2_tag_EnvironmentUse}}","EnvironmentType":"{{ec2_tag_EnvironmentType}}","Role":"{{ec2_tag_Role}}","Criticality":"{{ec2_tag_Criticality}}","StartCron":"{{ec2_tag_StartCron}}","StopCron":"{{ec2_tag_StopCron}}"}'
+    wait: true
+    count_tag:
+       Name: "{{ec2_tag_Name}}{{item}}"
+    exact_count: 1
+    user_data: "{{ ec2_user_data }}"
+    volumes:
+     - device_name: /dev/sda1
+       device_type: gp2
+       volume_size: "{{ ec2_volume_size }}"
+       delete_on_termination: true
+  with_sequence: start="{{ startindex }}" end={{startindex + no_of_instances - 1 }} format=%02d stride=1
+  register: ec2
+  async: 600
+  poll: 0
+
+- name: Wait for instance creation to complete
+  async_status: 
+   jid: "{{ item.ansible_job_id }}"
+   mode: status
+  register: ec2_jobs
+  until: ec2_jobs.finished
+  retries: 30
+  delay: 5 
+  with_items: 
+     - "{{ec2.results}}"
+
+#- debug:
+#   msg="{{ item.1.block_device_mapping}}"
+#  with_subelements:
+#     - "{{ec2_jobs.results | default([])}}"
+#     - tagged_instances 
+
+#- name: Tag root volumes
+#  ec2_tag:
+#    region: "{{ REGION }}"
+#    state: present
+#    resource: "{{ item.1 | json_query(\"block_device_mapping[].volume_id\")}}"
+#    tags: 
+#      Name: "{{ item.1.tags.Name }}"
+#  with_subelements:
+#     - "{{ec2_jobs.results | default([])}}"
+#     - tagged_instances
+
+- name: Add additional volume 1
+  ec2_vol:
+    instance: "{{ item.1.id }}"
+    device_name: /dev/xvdf
+    name: "{{ item.1.id }}_DATA1"
+    region: "{{ REGION }}"
+    volume_size: "{{ec2_additional_volume1_size }}"
+    delete_on_termination: true
+  when: (ec2_additional_volume1_size is defined) and (ec2_additional_volume1_size|int > 0)
+  with_subelements:
+     - "{{ec2_jobs.results | default([])}}"
+     - tagged_instances
+
+- name: Wait for the instances to boot by checking the ssh port
+  wait_for: host="{{item.1.private_ip}}" port=22 delay=30 timeout=320 state=started
+  when: (item is defined) and (not (item.1.state == "terminated")) and (ec2_instance_os == OS_LINUX)
+  with_subelements:
+     - "{{ec2_jobs.results | default([])}}"
+     - tagged_instances
+  register: port_check
+  async: 600
+  poll: 0
+
+- name: Wait for instance SSH port check to complete
+  async_status:
+   jid: "{{ item.ansible_job_id }}"
+   mode: status
+  register: port_wait
+  until: port_wait.finished
+  retries: 140
+  delay: 5
+  with_items:
+     - "{{port_check.results}}"
+  when: (ec2_instance_os ==  OS_LINUX)
+
+- name: Wait for the instances to boot by checking the RDP port
+  local_action: wait_for host={{ item.1.private_ip }} port=3389 delay=180 timeout=800 state=started
+  when: (item is defined) and (not (item.1.state == "terminated")) and (ec2_instance_os ==  OS_WINDOWS)
+  with_subelements:
+     - "{{ec2_jobs.results | default([])}}"
+     - tagged_instances
+  register: port_check
+  async: 600
+  poll: 0
+
+- name: Wait for instance RDP port check to complete
+  async_status:
+   jid: "{{ item.ansible_job_id }}"
+   mode: status
+  register: port_wait
+  until: port_wait.finished
+  retries: 140 
+  delay: 5
+  with_items:
+     - "{{port_check.results}}"
+  when: (ec2_instance_os ==  OS_WINDOWS)
+
+- name: Append the hostname and IP mapping to a file for renaming the instances.
+  lineinfile: 'dest=../ec2_vars/rename_hosts/hostname_mapping.yml regexp="{{ item.1.private_ip }}" line="  {{ item.1.private_ip }}: {{ item.1.tags.Name }}"'
+  when: (item is defined) and (not (item.1.state == "terminated"))
+  with_subelements:
+     - "{{ec2_jobs.results | default([])}}"
+     - tagged_instances
+
+- add_host: name="{{ item.1.private_ip }}"
+    groups="ROLE_{{ec2_tag_Role}}, OS_{{ec2_instance_os}},Application_{{ec2_tag_Application}}"
+  when: not (item.1.state == "terminated")
+  with_subelements:
+     - "{{ec2_jobs.results | default([])}}"
+     - tagged_instances
+
+- name: create file
+#  become: yes
+  template:
+    src: hosts.j2
+    dest: "../ec2_vars/{{cli_environmentid}}/{{ec2_tag_Application}}"
+

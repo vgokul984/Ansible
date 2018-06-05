@@ -1,0 +1,10 @@
+<powershell>
+#Invoke-Expression ((New-Object System.Net.Webclient).DownloadString('https://raw.githubusercontent.com/ansible/ansible/devel/examples/scripts/ConfigureRemotingForAnsible.ps1'))
+mkdir "c:\aws\download" 
+Set-Location "c:\aws\download" 
+$wc = New-Object System.Net.WebClient 
+$myurl="http://art.europe.easyjet.local/artifactory/FCPE-installers-local/Winrm/ConfigureRemotingForAnsible.ps1" 
+$wc.DownloadFile("$myurl","c:\aws\download\ConfigureRemotingForAnsible.ps1") 
+cd c:\aws\download 
+.\ConfigureRemotingForAnsible.ps1 -ForceNewSSLCert true 
+</powershell>
