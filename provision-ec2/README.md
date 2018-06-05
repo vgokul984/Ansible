@@ -13,9 +13,9 @@ Role Variables
 ec2-vars should be defined with below list of variables
 ec2_keypair: ""
 ec2_image: ""
-ec2_subnet_name: ['vpc-FCP-PTE-Digital-Management-A']
-ec2_security_group_name: ['SG-DIG-PT-LTM-EXT','SG-DIG-PT-LTM-MGT','SG-DIG-PT-LTM-INT']
-ec2_vpc_name: "vpc-FCP-PTE-Digital"
+ec2_subnet_name: ['']
+ec2_security_group_name: ['']
+ec2_vpc_name: ""
 ec2_region: ""
 ec2_instance_type: ""
 ec2_tag_Role: ""
